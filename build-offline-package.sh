@@ -46,6 +46,33 @@ command -v python3 >/dev/null 2>&1 || error "需要 Python 3"
 command -v curl >/dev/null 2>&1 || error "需要 curl"
 command -v tar >/dev/null 2>&1 || error "需要 tar"
 
+# 检查是否为 Ubuntu 系统
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    if [ "$ID" = "ubuntu" ] || [ "$ID_LIKE" = "ubuntu" ]; then
+        log "检测到 Ubuntu 系统：$PRETTY_NAME"
+
+        # 检查 Python 版本
+        PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        if [ "$(printf '%s\n' "3.11" "$PYTHON_VERSION" | sort -V | head -n1)" != "3.11" ]; then
+            warn "Ubuntu 系统建议使用 Python 3.11+，当前版本：$PYTHON_VERSION"
+            warn "可以运行以下命令安装更新版本："
+            warn "  sudo apt update"
+            warn "  sudo apt install python3.11 python3.11-venv python3.11-dev"
+            warn "  sudo apt install python3-pip"
+        fi
+
+        # 检查必要的系统包
+        if ! command -v git >/dev/null 2>&1; then
+            warn "建议安装 git：sudo apt install git"
+        fi
+
+        if ! command -v pip3 >/dev/null 2>&1; then
+            warn "建议安装 pip3：sudo apt install python3-pip"
+        fi
+    fi
+fi
+
 # 检查网络连接
 log "检查网络连接..."
 if ! curl -s --connect-timeout 5 https://github.com >/dev/null; then
@@ -88,9 +115,51 @@ cd ..
 # 下载 uv 包管理器
 log "下载 uv 包管理器..."
 UV_VERSION=$(curl -s https://api.github.com/repos/astral-sh/uv/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-curl -L "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-musl.tar.gz" | tar -xz
-mv uv-x86_64-unknown-linux-musl/uv uv-bin
-rm -rf uv-x86_64-unknown-linux-musl
+
+# 检测系统架构
+ARCH=$(uname -m)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+case $ARCH in
+    x86_64)
+        UV_ARCH="x86_64"
+        ;;
+    aarch64|arm64)
+        UV_ARCH="aarch64"
+        ;;
+    armv7l)
+        UV_ARCH="armv7"
+        ;;
+    *)
+        log "不支持的架构: $ARCH，尝试使用 x86_64 版本"
+        UV_ARCH="x86_64"
+        ;;
+esac
+
+# 确定目标文件名
+if [ "$OS" = "linux" ]; then
+    UV_FILE="uv-${UV_ARCH}-unknown-linux-musl.tar.gz"
+elif [ "$OS" = "darwin" ]; then
+    UV_FILE="uv-${UV_ARCH}-apple-darwin.tar.gz"
+else
+    log "不支持的操作系统: $OS，尝试使用 Linux 版本"
+    UV_FILE="uv-${UV_ARCH}-unknown-linux-musl.tar.gz"
+fi
+
+log "下载 uv $UV_VERSION ($UV_FILE) ..."
+if curl -L "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_FILE}" | tar -xz; then
+    # 查找 uv 二进制文件
+    UV_DIR=$(find . -name "uv-*" -type d | head -1)
+    if [ -n "$UV_DIR" ] && [ -f "$UV_DIR/uv" ]; then
+        mv "$UV_DIR/uv" uv-bin
+        rm -rf "$UV_DIR"
+        log "uv 下载成功"
+    else
+        warn "uv 二进制文件未找到，将在安装脚本中安装"
+    fi
+else
+    warn "uv 下载失败，将在安装脚本中安装"
+fi
 
 # 下载 AI 助手模板文件
 log "下载 AI 助手模板文件..."
@@ -161,15 +230,40 @@ fi
 
 log "Python 版本检查通过: $PYTHON_VERSION"
 
-# 安装 uv 包管理器
-log "安装 uv 包管理器..."
-chmod +x uv-bin
-./uv-bin version
+# 检查并安装 uv 包管理器
+log "检查 uv 包管理器..."
+export PATH="$(pwd):$PATH"
+
+if [ -f "./uv-bin" ]; then
+    log "使用内置 uv 二进制文件"
+    chmod +x uv-bin
+    UV_CMD="./uv-bin"
+else
+    log "安装 uv 包管理器..."
+    # 尝试不同的安装方法
+    if command -v pip3 >/dev/null 2>&1; then
+        pip3 install uv --user
+        UV_CMD="uv"
+    elif command -v pip >/dev/null 2>&1; then
+        pip install uv --user
+        UV_CMD="uv"
+    else
+        error "找不到 pip 或 pip3，请先安装 Python pip"
+    fi
+fi
+
+# 验证 uv 安装
+if ! $UV_CMD version >/dev/null 2>&1; then
+    error "uv 安装失败"
+fi
 
 # 安装 Spec Kit
 log "安装 Spec Kit..."
-export PATH="$(pwd):$PATH"
-./uv-bin tool install ./speck-kit-source --no-index --find-links packages
+if [ "$UV_CMD" = "./uv-bin" ]; then
+    $UV_CMD tool install ./speck-kit-source --no-index --find-links packages
+else
+    $UV_CMD tool install ./speck-kit-source --no-index --find-links packages
+fi
 
 # 设置环境变量
 log "配置环境变量..."

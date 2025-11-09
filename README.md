@@ -121,6 +121,37 @@ specify check
 ./install.sh
 ```
 
+### Ubuntu 系统注意事项
+
+#### 安装前准备
+```bash
+# 更新系统包
+sudo apt update
+
+# 安装 Python 3.11+ (如果系统版本较旧)
+sudo apt install python3.11 python3.11-venv python3.11-dev python3-pip
+
+# 安装必要工具
+sudo apt install curl tar git
+```
+
+#### Ubuntu 版本支持
+- ✅ Ubuntu 20.04+ (需要手动安装 Python 3.11)
+- ✅ Ubuntu 22.04+ (推荐，Python 3.11+ 内置)
+- ✅ Ubuntu 24.04+ (最佳支持)
+
+#### 可能的问题和解决方案
+```bash
+# 如果提示 pip 版本过低
+sudo python3 -m pip install --upgrade pip
+
+# 如果虚拟环境创建失败
+sudo apt install python3.11-venv
+
+# 如果出现权限问题
+sudo chown -R $USER:$USER ~/.local
+```
+
 ## 版本信息
 
 - **Spec Kit 版本**: v0.0.20
