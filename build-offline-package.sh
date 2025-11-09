@@ -1,4 +1,12 @@
 #!/bin/bash
+# 注意：此脚本需要 bash 环境，不支持纯 sh
+
+# 检查是否在 bash 环境中运行
+if [ -z "$BASH_VERSION" ]; then
+    echo "错误：此脚本需要 bash 环境运行"
+    echo "请使用：bash build-offline-package.sh"
+    exit 1
+fi
 
 # Speck Kit 离线安装包构建脚本
 # 生成包含所有依赖的独立安装包
@@ -38,7 +46,7 @@ FORCE_REBUILD=false
 CLEAN_CACHE=false
 
 # 解析命令行参数
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case $1 in
         --force)
             FORCE_REBUILD=true

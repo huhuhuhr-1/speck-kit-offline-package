@@ -19,7 +19,9 @@ cd /opt/docs/speck-kit-offline-package
 
 # 运行构建脚本
 chmod +x build-offline-package.sh
-./build-offline-package.sh
+bash build-offline-package.sh
+
+# 注意：必须使用 bash，不支持 sh
 ```
 
 **脚本会自动完成：**
@@ -37,16 +39,16 @@ speck-kit-offline-installer.tar.gz    (约50-100MB)
 
 ```bash
 # 使用缓存加速（默认）
-./build-offline-package.sh
+bash build-offline-package.sh
 
 # 强制重新构建（忽略缓存）
-./build-offline-package.sh --force
+bash build-offline-package.sh --force
 
 # 清理所有缓存
-./build-offline-package.sh --clean
+bash build-offline-package.sh --clean
 
 # 指定缓存目录
-./build-offline-package.sh --cache-dir /path/to/cache
+bash build-offline-package.sh --cache-dir /path/to/cache
 ```
 
 **缓存效果：**
