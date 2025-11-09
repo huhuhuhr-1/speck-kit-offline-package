@@ -68,12 +68,20 @@ git clone --depth 1 https://github.com/github/spec-kit.git speck-kit-source
 log "下载 Python 依赖包..."
 cd speck-kit-source
 python3 -m venv temp_env
-source temp_env/bin/activate
-pip install uv
-uv pip lock
-mkdir -p ../packages
-uv pip download --requirements uv.lock -d ../packages
-deactivate
+if [ -f "temp_env/bin/activate" ]; then
+    . temp_env/bin/activate
+    pip install uv
+    uv pip lock
+    mkdir -p ../packages
+    uv pip download --requirements uv.lock -d ../packages
+    deactivate
+else
+    # 如果无法创建虚拟环境，使用 pip 直接下载
+    log "使用 pip 直接下载依赖..."
+    mkdir -p ../packages
+    pip download speck-cli -d ../packages
+    pip download typer click rich -d ../packages
+fi
 rm -rf temp_env
 cd ..
 
