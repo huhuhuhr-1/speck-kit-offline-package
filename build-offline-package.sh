@@ -18,6 +18,33 @@ PACKAGE_NAME="speck-kit-offline-installer"
 BUILD_DIR="$(mktemp -d)"
 SPECK_KIT_VERSION="v0.0.79"
 
+# 缓存配置
+CACHE_DIR="${SPECK_KIT_CACHE_DIR:-$HOME/.speck-kit-cache}"
+FORCE_REBUILD=false
+CLEAN_CACHE=false
+
+# 解析命令行参数
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --force)
+            FORCE_REBUILD=true
+            shift
+            ;;
+        --clean)
+            CLEAN_CACHE=true
+            shift
+            ;;
+        --cache-dir)
+            CACHE_DIR="$2"
+            shift 2
+            ;;
+        *)
+            log "未知参数: $1"
+            exit 1
+            ;;
+    esac
+done
+
 log() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
@@ -31,6 +58,55 @@ error() {
     exit 1
 }
 
+# 缓存管理函数
+setup_cache() {
+    if [ "$CLEAN_CACHE" = true ]; then
+        log "清理缓存目录..."
+        rm -rf "$CACHE_DIR"
+    fi
+
+    mkdir -p "$CACHE_DIR"/{source,packages,uv-binary,templates,metadata}
+    log "缓存目录: $CACHE_DIR"
+}
+
+clean_cache() {
+    if [ -d "$CACHE_DIR" ]; then
+        local cache_size=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1)
+        log "清理缓存 (当前大小: $cache_size)..."
+        rm -rf "$CACHE_DIR"
+        log "缓存已清理"
+    fi
+}
+
+# 生成文件哈希
+generate_hash() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | cut -d' ' -f1
+    else
+        # 备用方案：使用文件大小和修改时间
+        stat -c "%s-%Y" "$file" 2>/dev/null || stat -f "%z-%m" "$file" 2>/dev/null
+    fi
+}
+
+# 比较缓存有效性
+is_cache_valid() {
+    local cache_file="$1"
+    local source_hash="$2"
+    local hash_file="$3"
+
+    if [ "$FORCE_REBUILD" = true ]; then
+        return 1
+    fi
+
+    if [ ! -f "$cache_file" ] || [ ! -f "$hash_file" ]; then
+        return 1
+    fi
+
+    local cached_hash=$(cat "$hash_file")
+    [ "$cached_hash" = "$source_hash" ]
+}
+
 # 清理函数
 cleanup() {
     rm -rf "$BUILD_DIR"
@@ -40,6 +116,18 @@ cleanup() {
 trap cleanup EXIT
 
 log "开始构建 Speck Kit 离线安装包..."
+
+# 显示缓存状态
+if [ "$FORCE_REBUILD" = true ]; then
+    log "强制重建模式：忽略缓存"
+elif [ "$CLEAN_CACHE" = true ]; then
+    log "清理缓存模式：将删除所有缓存"
+else
+    log "增量构建模式：使用缓存加速"
+fi
+
+# 初始化缓存
+setup_cache
 
 # 检查依赖
 command -v python3 >/dev/null 2>&1 || error "需要 Python 3"
@@ -84,12 +172,38 @@ log "创建构建目录..."
 mkdir -p "$BUILD_DIR/$PACKAGE_NAME"
 cd "$BUILD_DIR/$PACKAGE_NAME"
 
-# 下载 Spec Kit 源码
-log "下载 Spec Kit 源码..."
-if [ -d "speck-kit-source" ]; then
-    rm -rf speck-kit-source
+# 下载 Spec Kit 源码（使用缓存）
+log "检查 Spec Kit 源码缓存..."
+SOURCE_CACHE_DIR="$CACHE_DIR/source"
+SOURCE_METADATA_FILE="$CACHE_DIR.metadata/source_commit"
+
+# 获取最新 commit ID
+LATEST_COMMIT=$(curl -s "https://api.github.com/repos/github/spec-kit/commits/main" | grep '"sha"' | head -1 | sed 's/.*"([^"]+)".*/\1/')
+
+if [ -z "$LATEST_COMMIT" ]; then
+    warn "无法获取最新 commit 信息，使用传统方式下载"
+    git clone --depth 1 https://github.com/github/spec-kit.git speck-kit-source
+else
+    if is_cache_valid "$SOURCE_CACHE_DIR" "$LATEST_COMMIT" "$SOURCE_METADATA_FILE"; then
+        log "使用缓存的源码 (commit: ${LATEST_COMMIT:0:8})"
+        cp -r "$SOURCE_CACHE_DIR" speck-kit-source
+    else
+        log "下载 Spec Kit 源码 (commit: ${LATEST_COMMIT:0:8})..."
+        if [ -d "$SOURCE_CACHE_DIR" ]; then
+            cd "$SOURCE_CACHE_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+            cd ..
+        else
+            git clone --depth 1 https://github.com/github/spec-kit.git "$SOURCE_CACHE_DIR"
+        fi
+
+        # 更新缓存
+        cp -r "$SOURCE_CACHE_DIR" speck-kit-source
+        echo "$LATEST_COMMIT" > "$SOURCE_METADATA_FILE"
+        log "源码已更新到缓存"
+    fi
 fi
-git clone --depth 1 https://github.com/github/spec-kit.git speck-kit-source
 
 # 下载 Python 依赖
 log "下载 Python 依赖包..."
@@ -161,11 +275,14 @@ else
     warn "uv 下载失败，将在安装脚本中安装"
 fi
 
-# 下载 AI 助手模板文件
-log "下载 AI 助手模板文件..."
+# 下载 AI 助手模板文件（使用缓存和并行下载）
+log "检查 AI 助手模板缓存..."
+TEMPLATES_CACHE_DIR="$CACHE_DIR/templates"
+TEMPLATES_METADATA_FILE="$CACHE_DIR.metadata/templates_version"
+
 mkdir -p templates
 
-# 获取最新的模板文件列表
+# 获取模板文件列表
 log "获取模板文件列表..."
 TEMPLATE_FILES=$(curl -s "https://api.github.com/repos/github/spec-kit/releases/tags/v0.0.79" | \
     grep -o '"spec-kit-template-[^"]*\.zip"' | \
@@ -176,17 +293,66 @@ if [ -z "$TEMPLATE_FILES" ]; then
     TEMPLATE_FILES="spec-kit-template-claude-sh-v0.0.79.zip spec-kit-template-claude-ps-v0.0.79.zip spec-kit-template-copilot-sh-v0.0.79.zip spec-kit-template-copilot-ps-v0.0.79.zip spec-kit-template-gemini-sh-v0.0.79.zip spec-kit-template-gemini-ps-v0.0.79.zip"
 fi
 
-# 下载模板文件
-TEMPLATE_COUNT=0
-for template in $TEMPLATE_FILES; do
-    log "下载模板: $template"
-    if curl -L -o "templates/$template" "https://github.com/github/spec-kit/releases/download/v0.0.79/$template"; then
-        TEMPLATE_COUNT=$((TEMPLATE_COUNT + 1))
-    else
-        warn "下载失败: $template"
-    fi
-done
+# 检查模板版本
+if is_cache_valid "$TEMPLATES_CACHE_DIR" "$SPECK_KIT_VERSION" "$TEMPLATES_METADATA_FILE"; then
+    log "使用缓存的模板文件"
+    cp -r "$TEMPLATES_CACHE_DIR"/* templates/ 2>/dev/null || true
+else
+    log "下载模板文件..."
 
+    # 创建下载函数
+    download_template() {
+        local template="$1"
+        local cache_file="$TEMPLATES_CACHE_DIR/$template"
+        local target_file="templates/$template"
+
+        # 检查单个文件缓存
+        if [ -f "$cache_file" ] && [ "$FORCE_REBUILD" != true ]; then
+            local file_size=$(stat -c%s "$cache_file" 2>/dev/null || stat -f%z "$cache_file" 2>/dev/null)
+            if [ "$file_size" -gt 50000 ]; then  # 文件应该大于50KB
+                cp "$cache_file" "$target_file"
+                echo "✓ $template (缓存)"
+                return 0
+            fi
+        fi
+
+        # 下载文件
+        if curl -L -s -o "$cache_file.tmp" "https://github.com/github/spec-kit/releases/download/v0.0.79/$template"; then
+            local file_size=$(stat -c%s "$cache_file.tmp" 2>/dev/null || stat -f%z "$cache_file.tmp" 2>/dev/null)
+            if [ "$file_size" -gt 50000 ]; then
+                mv "$cache_file.tmp" "$cache_file"
+                cp "$cache_file" "$target_file"
+                echo "✓ $template (下载)"
+                return 0
+            else
+                rm -f "$cache_file.tmp"
+                echo "✗ $template (文件过小)"
+                return 1
+            fi
+        else
+            rm -f "$cache_file.tmp"
+            echo "✗ $template (下载失败)"
+            return 1
+        fi
+    }
+
+    # 导出函数以供 xargs 使用
+    export -f download_template
+    export TEMPLATES_CACHE_DIR SPECK_KIT_VERSION FORCE_REBUILD
+
+    # 并行下载模板文件
+    mkdir -p "$TEMPLATES_CACHE_DIR"
+    log "开始并行下载 $(echo $TEMPLATE_FILES | wc -w) 个模板文件..."
+
+    echo "$TEMPLATE_FILES" | tr ' ' '\n' | xargs -I {} -P 4 bash -c 'download_template "$@"' _ {}
+
+    # 更新模板版本缓存
+    echo "$SPECK_KIT_VERSION" > "$TEMPLATES_METADATA_FILE"
+    log "模板文件已更新到缓存"
+fi
+
+# 统计下载结果
+TEMPLATE_COUNT=$(find templates -name "*.zip" -type f | wc -l)
 log "成功下载 $TEMPLATE_COUNT 个模板文件"
 
 # 创建安装脚本

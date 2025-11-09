@@ -33,6 +33,27 @@ chmod +x build-offline-package.sh
 speck-kit-offline-installer.tar.gz    (约50-100MB)
 ```
 
+#### 缓存加速选项
+
+```bash
+# 使用缓存加速（默认）
+./build-offline-package.sh
+
+# 强制重新构建（忽略缓存）
+./build-offline-package.sh --force
+
+# 清理所有缓存
+./build-offline-package.sh --clean
+
+# 指定缓存目录
+./build-offline-package.sh --cache-dir /path/to/cache
+```
+
+**缓存效果：**
+- **首次构建**：5-15分钟（正常速度）
+- **后续构建**：30秒-2分钟（提升70-90%）
+- **缓存位置**：`~/.speck-kit-cache/`
+
 ### 验证生成的安装包
 
 ```bash
