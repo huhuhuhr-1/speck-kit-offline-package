@@ -399,12 +399,19 @@ else
         local cache_file="$TEMPLATES_CACHE_DIR/$template"
         local target_file="templates/$template"
 
-        # 检查单个文件缓存
-        if [ -f "$cache_file" ] && [ "$FORCE_REBUILD" != true ]; then
-            local file_size=$(stat -c%s "$cache_file" 2>/dev/null || stat -f%z "$cache_file" 2>/dev/null)
+        # 检查单个文件缓存（先检查本地，再检查缓存目录）
+        local source_file=""
+        if [ -f "templates/$template" ] && [ "$FORCE_REBUILD" != true ]; then
+            source_file="templates/$template"
+        elif [ -f "$cache_file" ] && [ "$FORCE_REBUILD" != true ]; then
+            source_file="$cache_file"
+        fi
+
+        if [ -n "$source_file" ]; then
+            local file_size=$(stat -c%s "$source_file" 2>/dev/null || stat -f%z "$source_file" 2>/dev/null)
             if [ "$file_size" -gt 50000 ]; then  # 文件应该大于50KB
-                cp "$cache_file" "$target_file"
-                echo "✓ $template (缓存)"
+                cp "$source_file" "$target_file"
+                echo "✓ $template (本地文件)"
                 return 0
             fi
         fi
