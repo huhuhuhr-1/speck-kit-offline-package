@@ -171,8 +171,18 @@ fi
 
 # 检查网络连接
 log "检查网络连接..."
-if ! curl -s --connect-timeout 5 https://github.com >/dev/null; then
-    error "无法连接到 GitHub，请检查网络连接"
+NETWORK_AVAILABLE=false
+if curl -s --connect-timeout 5 https://github.com >/dev/null; then
+    NETWORK_AVAILABLE=true
+    log "网络连接正常"
+else
+    warn "无法连接到 GitHub，将使用离线模式"
+    warn "离线模式：只能使用本地缓存的文件"
+fi
+
+# 如果是离线模式且没有缓存，提示用户
+if [ "$NETWORK_AVAILABLE" = false ] && [ ! -d "$CACHE_DIR/source" ]; then
+    error "离线模式下需要先在联网环境运行脚本生成缓存"
 fi
 
 # 创建构建目录
@@ -185,12 +195,30 @@ log "检查 Spec Kit 源码缓存..."
 SOURCE_CACHE_DIR="$CACHE_DIR/source"
 SOURCE_METADATA_FILE="$CACHE_DIR.metadata/source_commit"
 
-# 获取最新 commit ID
-LATEST_COMMIT=$(curl -s "https://api.github.com/repos/github/spec-kit/commits/main" | grep '"sha"' | head -1 | sed 's/.*"([^"]+)".*/\1/')
+# 获取最新 commit ID（仅在有网络时）
+LATEST_COMMIT=""
+if [ "$NETWORK_AVAILABLE" = true ]; then
+    LATEST_COMMIT=$(curl -s "https://api.github.com/repos/github/spec-kit/commits/main" | grep '"sha"' | head -1 | sed 's/.*"([^"]+)".*/\1/')
+fi
 
 if [ -z "$LATEST_COMMIT" ]; then
-    warn "无法获取最新 commit 信息，使用传统方式下载"
-    git clone --depth 1 https://github.com/github/spec-kit.git speck-kit-source
+    if [ "$NETWORK_AVAILABLE" = true ]; then
+        warn "无法获取最新 commit 信息，使用传统方式下载"
+        if [ -d "$SOURCE_CACHE_DIR" ]; then
+            log "使用缓存的源码"
+            cp -r "$SOURCE_CACHE_DIR" speck-kit-source
+        else
+            git clone --depth 1 https://github.com/github/spec-kit.git speck-kit-source
+        fi
+    else
+        # 离线模式：必须使用缓存
+        if [ -d "$SOURCE_CACHE_DIR" ]; then
+            log "离线模式：使用缓存的源码"
+            cp -r "$SOURCE_CACHE_DIR" speck-kit-source
+        else
+            error "离线模式下没有可用的源码缓存"
+        fi
+    fi
 else
     if is_cache_valid "$SOURCE_CACHE_DIR" "$LATEST_COMMIT" "$SOURCE_METADATA_FILE"; then
         log "使用缓存的源码 (commit: ${LATEST_COMMIT:0:8})"
@@ -234,53 +262,57 @@ fi
 rm -rf temp_env
 cd ..
 
-# 下载 uv 包管理器
-log "下载 uv 包管理器..."
-UV_VERSION=$(curl -s https://api.github.com/repos/astral-sh/uv/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+# 下载 uv 包管理器（仅在有网络时）
+if [ "$NETWORK_AVAILABLE" = true ]; then
+    log "下载 uv 包管理器..."
+    UV_VERSION=$(curl -s https://api.github.com/repos/astral-sh/uv/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 
-# 检测系统架构
-ARCH=$(uname -m)
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    # 检测系统架构
+    ARCH=$(uname -m)
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
-case $ARCH in
-    x86_64)
-        UV_ARCH="x86_64"
-        ;;
-    aarch64|arm64)
-        UV_ARCH="aarch64"
-        ;;
-    armv7l)
-        UV_ARCH="armv7"
-        ;;
-    *)
-        log "不支持的架构: $ARCH，尝试使用 x86_64 版本"
-        UV_ARCH="x86_64"
-        ;;
-esac
+    case $ARCH in
+        x86_64)
+            UV_ARCH="x86_64"
+            ;;
+        aarch64|arm64)
+            UV_ARCH="aarch64"
+            ;;
+        armv7l)
+            UV_ARCH="armv7"
+            ;;
+        *)
+            log "不支持的架构: $ARCH，尝试使用 x86_64 版本"
+            UV_ARCH="x86_64"
+            ;;
+    esac
 
-# 确定目标文件名
-if [ "$OS" = "linux" ]; then
-    UV_FILE="uv-${UV_ARCH}-unknown-linux-musl.tar.gz"
-elif [ "$OS" = "darwin" ]; then
-    UV_FILE="uv-${UV_ARCH}-apple-darwin.tar.gz"
-else
-    log "不支持的操作系统: $OS，尝试使用 Linux 版本"
-    UV_FILE="uv-${UV_ARCH}-unknown-linux-musl.tar.gz"
-fi
-
-log "下载 uv $UV_VERSION ($UV_FILE) ..."
-if curl -L "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_FILE}" | tar -xz; then
-    # 查找 uv 二进制文件
-    UV_DIR=$(find . -name "uv-*" -type d | head -1)
-    if [ -n "$UV_DIR" ] && [ -f "$UV_DIR/uv" ]; then
-        mv "$UV_DIR/uv" uv-bin
-        rm -rf "$UV_DIR"
-        log "uv 下载成功"
+    # 确定目标文件名
+    if [ "$OS" = "linux" ]; then
+        UV_FILE="uv-${UV_ARCH}-unknown-linux-musl.tar.gz"
+    elif [ "$OS" = "darwin" ]; then
+        UV_FILE="uv-${UV_ARCH}-apple-darwin.tar.gz"
     else
-        warn "uv 二进制文件未找到，将在安装脚本中安装"
+        log "不支持的操作系统: $OS，尝试使用 Linux 版本"
+        UV_FILE="uv-${UV_ARCH}-unknown-linux-musl.tar.gz"
+    fi
+
+    log "下载 uv $UV_VERSION ($UV_FILE) ..."
+    if curl -L "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_FILE}" | tar -xz; then
+        # 查找 uv 二进制文件
+        UV_DIR=$(find . -name "uv-*" -type d | head -1)
+        if [ -n "$UV_DIR" ] && [ -f "$UV_DIR/uv" ]; then
+            mv "$UV_DIR/uv" uv-bin
+            rm -rf "$UV_DIR"
+            log "uv 下载成功"
+        else
+            warn "uv 二进制文件未找到，将在安装脚本中安装"
+        fi
+    else
+        warn "uv 下载失败，将在安装脚本中安装"
     fi
 else
-    warn "uv 下载失败，将在安装脚本中安装"
+    log "离线模式：跳过 uv 下载，将在安装脚本中处理"
 fi
 
 # 下载 AI 助手模板文件（使用缓存和并行下载）
@@ -292,13 +324,20 @@ mkdir -p templates
 
 # 获取模板文件列表
 log "获取模板文件列表..."
-TEMPLATE_FILES=$(curl -s "https://api.github.com/repos/github/spec-kit/releases/tags/v0.0.79" | \
-    grep -o '"spec-kit-template-[^"]*\.zip"' | \
-    sed 's/"//g')
+TEMPLATE_FILES=""
+if [ "$NETWORK_AVAILABLE" = true ]; then
+    TEMPLATE_FILES=$(curl -s "https://api.github.com/repos/github/spec-kit/releases/tags/v0.0.79" | \
+        grep -o '"spec-kit-template-[^"]*\.zip"' | \
+        sed 's/"//g')
+fi
 
 if [ -z "$TEMPLATE_FILES" ]; then
-    warn "无法获取模板文件列表，使用默认列表"
-    TEMPLATE_FILES="spec-kit-template-claude-sh-v0.0.79.zip spec-kit-template-claude-ps-v0.0.79.zip spec-kit-template-copilot-sh-v0.0.79.zip spec-kit-template-copilot-ps-v0.0.79.zip spec-kit-template-gemini-sh-v0.0.79.zip spec-kit-template-gemini-ps-v0.0.79.zip"
+    if [ "$NETWORK_AVAILABLE" = true ]; then
+        warn "无法获取模板文件列表，使用默认列表"
+    else
+        log "离线模式：使用缓存的模板文件列表"
+    fi
+    TEMPLATE_FILES="spec-kit-template-claude-sh-v0.0.79.zip spec-kit-template-claude-ps-v0.0.79.zip spec-kit-template-copilot-sh-v0.0.79.zip spec-kit-template-copilot-ps-v0.0.79.zip spec-kit-template-gemini-sh-v0.0.79.zip spec-kit-template-gemini-ps-v0.0.79.zip spec-kit-template-qwen-sh-v0.0.79.zip spec-kit-template-qwen-ps-v0.0.79.zip spec-kit-template-opencode-sh-v0.0.79.zip spec-kit-template-opencode-ps-v0.0.79.zip spec-kit-template-cursor-agent-sh-v0.0.79.zip spec-kit-template-codex-sh-v0.0.79.zip spec-kit-template-codex-ps-v0.0.79.zip spec-kit-template-windsurf-sh-v0.0.79.zip spec-kit-template-windsurf-ps-v0.0.79.zip spec-kit-template-kilocode-sh-v0.0.79.zip spec-kit-template-kilocode-ps-v0.0.79.zip spec-kit-template-auggie-sh-v0.0.79.zip spec-kit-template-auggie-ps-v0.0.79.zip spec-kit-template-codebuddy-sh-v0.0.79.zip spec-kit-template-codebuddy-ps-v0.0.79.zip spec-kit-template-roo-sh-v0.0.79.zip spec-kit-template-roo-ps-v0.0.79.zip spec-kit-template-q-sh-v0.0.79.zip spec-kit-template-q-ps-v0.0.79.zip spec-kit-template-amp-sh-v0.0.79.zip spec-kit-template-amp-ps-v0.0.79.zip"
 fi
 
 # 检查模板版本
@@ -324,23 +363,41 @@ else
             fi
         fi
 
-        # 下载文件
-        if curl -L -s -o "$cache_file.tmp" "https://github.com/github/spec-kit/releases/download/v0.0.79/$template"; then
-            local file_size=$(stat -c%s "$cache_file.tmp" 2>/dev/null || stat -f%z "$cache_file.tmp" 2>/dev/null)
-            if [ "$file_size" -gt 50000 ]; then
-                mv "$cache_file.tmp" "$cache_file"
-                cp "$cache_file" "$target_file"
-                echo "✓ $template (下载)"
-                return 0
+        # 下载文件（仅在有网络时）
+        if [ "$NETWORK_AVAILABLE" = true ]; then
+            if curl -L -s -o "$cache_file.tmp" "https://github.com/github/spec-kit/releases/download/v0.0.79/$template"; then
+                local file_size=$(stat -c%s "$cache_file.tmp" 2>/dev/null || stat -f%z "$cache_file.tmp" 2>/dev/null)
+                if [ "$file_size" -gt 50000 ]; then
+                    mv "$cache_file.tmp" "$cache_file"
+                    cp "$cache_file" "$target_file"
+                    echo "✓ $template (下载)"
+                    return 0
+                else
+                    rm -f "$cache_file.tmp"
+                    echo "✗ $template (文件过小)"
+                    return 1
+                fi
             else
                 rm -f "$cache_file.tmp"
-                echo "✗ $template (文件过小)"
+                echo "✗ $template (下载失败)"
                 return 1
             fi
         else
-            rm -f "$cache_file.tmp"
-            echo "✗ $template (下载失败)"
-            return 1
+            # 离线模式：只能使用缓存
+            if [ -f "$cache_file" ]; then
+                local file_size=$(stat -c%s "$cache_file" 2>/dev/null || stat -f%z "$cache_file" 2>/dev/null)
+                if [ "$file_size" -gt 50000 ]; then
+                    cp "$cache_file" "$target_file"
+                    echo "✓ $template (离线缓存)"
+                    return 0
+                else
+                    echo "✗ $template (缓存文件损坏)"
+                    return 1
+                fi
+            else
+                echo "✗ $template (无缓存)"
+                return 1
+            fi
         fi
     }
 
