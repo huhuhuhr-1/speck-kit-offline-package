@@ -12,6 +12,20 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# 先定义函数，避免调用顺序问题
+log() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+    exit 1
+}
+
 # 配置
 VERSION="v1.0"
 PACKAGE_NAME="speck-kit-offline-installer"
@@ -39,24 +53,10 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            log "未知参数: $1"
-            exit 1
+            error "未知参数: $1"
             ;;
     esac
 done
-
-log() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-    exit 1
-}
 
 # 缓存管理函数
 setup_cache() {
@@ -344,7 +344,16 @@ else
     mkdir -p "$TEMPLATES_CACHE_DIR"
     log "开始并行下载 $(echo $TEMPLATE_FILES | wc -w) 个模板文件..."
 
-    echo "$TEMPLATE_FILES" | tr ' ' '\n' | xargs -I {} -P 4 bash -c 'download_template "$@"' _ {}
+    # 检查是否支持并行下载
+    if command -v xargs >/dev/null 2>&1 && xargs --help 2>/dev/null | grep -q "max-procs\|-P"; then
+        # 使用并行下载
+        echo "$TEMPLATE_FILES" | tr ' ' '\n' | xargs -I {} -P 4 bash -c 'download_template "$@"' _ {}
+    else
+        # 串行下载作为备用方案
+        for template in $TEMPLATE_FILES; do
+            download_template "$template"
+        done
+    fi
 
     # 更新模板版本缓存
     echo "$SPECK_KIT_VERSION" > "$TEMPLATES_METADATA_FILE"
@@ -439,7 +448,7 @@ if [ -n "$ZSH_VERSION" ]; then
 fi
 
 if ! grep -q "SPECIFY_TEMPLATE_DIR" "$SHELL_CONFIG"; then
-    echo "export SPECIFY_TEMPLATE_DIR=$(pwd)/templates" >> "$SHELL_CONFIG"
+    echo "export SPECIFY_TEMPLATE_DIR=\$(pwd)/templates" >> "$SHELL_CONFIG"
 fi
 
 if ! grep -q "\.local/bin" "$SHELL_CONFIG"; then
@@ -449,7 +458,7 @@ fi
 # 验证安装
 log "验证安装..."
 export SPECIFY_TEMPLATE_DIR="$(pwd)/templates"
-export PATH="$HOME/.local/bin:$PATH:$PATH"
+export PATH="$HOME/.local/bin:$PATH:$(pwd)"
 
 if ! command -v specify >/dev/null 2>&1; then
     error "安装失败：specify 命令不可用"
