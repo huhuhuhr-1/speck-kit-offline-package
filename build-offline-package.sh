@@ -75,6 +75,17 @@ setup_cache() {
 
     mkdir -p "$CACHE_DIR"/{source,packages,uv-binary,templates,metadata}
     log "缓存目录: $CACHE_DIR"
+
+    # 显示缓存状态
+    if [ -d "$CACHE_DIR/source" ] && [ -n "$(ls -A "$CACHE_DIR/source" 2>/dev/null)" ]; then
+        log "发现源码缓存"
+    fi
+    if [ -d "$CACHE_DIR/packages" ] && [ -n "$(ls -A "$CACHE_DIR/packages" 2>/dev/null)" ]; then
+        log "发现依赖包缓存"
+    fi
+    if [ -d "$CACHE_DIR/templates" ] && [ -n "$(ls -A "$CACHE_DIR/templates" 2>/dev/null)" ]; then
+        log "发现模板文件缓存"
+    fi
 }
 
 clean_cache() {
@@ -248,16 +259,51 @@ python3 -m venv temp_env
 if [ -f "temp_env/bin/activate" ]; then
     . temp_env/bin/activate
     pip install uv
-    uv pip lock
-    mkdir -p ../packages
-    uv pip download --requirements uv.lock -d ../packages
+
+    # 检查是否有缓存的依赖包
+    if [ -n "$(ls ../packages/*.whl 2>/dev/null)" ]; then
+        log "使用缓存的 Python 依赖包"
+    elif [ -n "$(ls $CACHE_DIR/packages/*.whl 2>/dev/null)" ]; then
+        log "使用缓存目录中的 Python 依赖包"
+        mkdir -p ../packages
+        cp $CACHE_DIR/packages/*.whl ../packages/ 2>/dev/null || true
+    else
+        log "未找到缓存的 Python 依赖包"
+        if [ "$NETWORK_AVAILABLE" = true ]; then
+            log "下载 Python 依赖包..."
+            uv pip lock
+            mkdir -p ../packages
+            mkdir -p "$CACHE_DIR/packages"
+            uv pip download --requirements uv.lock -d ../packages
+
+            # 复制到缓存目录
+            cp ../packages/*.whl "$CACHE_DIR/packages/" 2>/dev/null || true
+            log "依赖包已保存到缓存"
+        else
+            # 离线模式：使用 pip 直接下载基本依赖
+            log "离线模式：使用 pip 下载基本依赖..."
+            mkdir -p ../packages
+            pip download speck-cli -d ../packages 2>/dev/null || log "无法下载 speck-cli"
+            pip download typer -d ../packages 2>/dev/null || log "无法下载 typer"
+            pip download click -d ../packages 2>/dev/null || log "无法下载 click"
+            pip download rich -d ../packages 2>/dev/null || log "无法下载 rich"
+        fi
+    fi
+
+    if [ -n "$(ls ../packages/*.whl 2>/dev/null)" ]; then
+        log "Python 依赖包准备完成"
+    fi
     deactivate
 else
     # 如果无法创建虚拟环境，使用 pip 直接下载
     log "使用 pip 直接下载依赖..."
     mkdir -p ../packages
-    pip download speck-cli -d ../packages
-    pip download typer click rich -d ../packages
+    if [ "$NETWORK_AVAILABLE" = true ]; then
+        pip download speck-cli -d ../packages
+        pip download typer click rich -d ../packages
+    else
+        warn "离线模式下无法创建虚拟环境，跳过依赖下载"
+    fi
 fi
 rm -rf temp_env
 cd ..
