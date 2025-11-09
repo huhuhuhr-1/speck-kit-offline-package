@@ -1,0 +1,6 @@
+typer>=0.7.0
+rich>=13.0.0
+httpx[socks]>=0.24.0
+platformdirs>=3.0.0
+readchar>=4.0.0
+truststore>=0.10.4
